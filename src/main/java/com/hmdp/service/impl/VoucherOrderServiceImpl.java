@@ -11,16 +11,20 @@ import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import io.lettuce.core.RedisClient;
+import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
 
 /**
  * <p>
@@ -30,6 +34,7 @@ import java.time.LocalDateTime;
  * @author 虎哥
  * @since 2021-12-22
  */
+@Slf4j
 @Service
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
 
@@ -42,13 +47,49 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedissonClient redissonClient;
 
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+    //加载lua脚本
+    static{
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
+
+    @Override
+    public Result createVoucherOrder(Long voucherId) {
+        Long id = UserHolder.getUser().getId();
+
+        // 1. 执行lua脚本 判断是否下单
+        long success = stringRedisTemplate.execute(SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(),
+                id.toString()
+        );
+
+        int res = (int) success;
+
+        log.debug("res: {}", res);
+
+        //2. 如果下单成功 则创建订单
+        if (res != 0){
+            return Result.fail(res == 1 ? "库存不足" : "您已经领取过了哦");
+        }
+
+        Long orderId = redisIdWorker.nextId("order");
+
+
+        //TODO 将订单信息存入消息阻塞队列中
+        
+        return Result.ok(orderId);
+    }
+
 
     /**
      * 创建代金券订单
      * @param voucherId
      * @return 返回创建的订单id
      */
-    @Override
+    /*@Override
     public Result createVoucherOrder(Long voucherId) {
         //1. 查询代金券
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
@@ -95,7 +136,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             lock.unlock();
         }
 
-    }
+    }*/
 
     @Transactional
     public Result createVoucherOrder2(Long voucherId) {
